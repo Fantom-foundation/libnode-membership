@@ -26,8 +26,8 @@ pub fn compute_hash<B: Serialize>(b: &B) -> Result<Hash, Error> {
 
 #[cfg(test)]
 mod tests {
-    use sha3::{Digest, Sha3_256};
     use super::compute_hash;
+    use sha3::{Digest, Sha3_256};
 
     #[test]
     fn compute_hash_works() {

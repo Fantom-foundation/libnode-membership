@@ -1,16 +1,9 @@
-//! `Graph` is a gossip graph with an interface to external networking:
-//!
-//! - `Graph::poll` queries the configured local failure detector for any new failures, and outputs
-//! gossip messages for the external networking layer to send to remote nodes.
-//!
-//! - `Graph::handle_message` handles a message received by the networking layer from a remote node.
-
 use std::cmp::{Ord, Ordering, PartialOrd};
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Debug;
+use std::iter;
 
-use bit_set::BitSet;
 use failure::Fail;
 use serde::{Deserialize, Serialize};
 
@@ -20,22 +13,50 @@ use crate::hash::{compute_hash, Error as HashError, Hash};
 pub trait NodeId: Eq + Ord + Clone + Debug + Send + Serialize + Sync {}
 impl<N> NodeId for N where N: Eq + Ord + Clone + Debug + Send + Serialize + Sync {}
 
-/// Observations of network events.
+/// Group membership actions.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum Observation<N: NodeId> {
-    /// The genesis group.
-    Genesis(BTreeSet<N>),
+pub enum Action<N: NodeId> {
+    /// Register the initial group.
+    Init(BTreeSet<N>),
+    /// A proposal to add a node.
     Add(N),
+    /// A proposal to remove a node.
     Remove(N),
 }
 
 /// A gossip event.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Event<N: NodeId> {
+    /// The ID of the creator of the event.
     creator_id: N,
+    /// The hash of the self-parent event.
     self_parent: Option<Hash>,
+    /// The hash of the other-parent event.
     other_parent: Option<Hash>,
-    observation: Observation<N>,
+    /// The event action.
+    action: Action<N>,
+}
+
+impl<N: NodeId> Event<N> {
+    /// The ID of the creator of the event.
+    pub fn creator_id(&self) -> &N {
+        &self.creator_id
+    }
+
+    /// The index of the self-parent of the event.
+    pub fn self_parent(&self) -> Option<&Hash> {
+        self.self_parent.as_ref()
+    }
+
+    /// The index of the other-parent of the event.
+    pub fn other_parent(&self) -> Option<&Hash> {
+        self.other_parent.as_ref()
+    }
+
+    /// The event action.
+    pub fn action(&self) -> &Action<N> {
+        &self.action
+    }
 }
 
 /// A reference to an `Event`, and its index in the gossip graph.
@@ -65,24 +86,35 @@ impl<'a, N: NodeId> Ord for EventRef<'a, N> {
     }
 }
 
+impl<'a, N: NodeId + 'a> EventRef<'a, N> {
+    /// The ID of the creator of the event.
+    pub fn creator_id(&self) -> &N {
+        &self.event.creator_id()
+    }
+
+    /// The hash of the self-parent of the event.
+    pub fn self_parent(&self) -> Option<&Hash> {
+        self.event.self_parent.as_ref()
+    }
+
+    /// The hash of the other-parent of the event.
+    pub fn other_parent(&self) -> Option<&Hash> {
+        self.event.other_parent.as_ref()
+    }
+
+    /// The event action.
+    pub fn action(&self) -> &Action<N> {
+        &self.event.action
+    }
+}
+
 /// A gossip graph error.
 #[derive(Debug, Fail)]
 pub enum Error {
-    /// A failure detector error.
-    #[fail(display = "Failure detector error")]
-    FailureDetector,
     /// A hasher error.
     #[fail(display = "Hasher error: {}", _0)]
     Hash(HashError),
 }
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum Message<N: NodeId> {
-    Event(Event<N>),
-}
-
-unsafe impl<N: NodeId> Send for Message<N> {}
-unsafe impl<N: NodeId> Sync for Message<N> {}
 
 /// A gossip graph.
 #[derive(Clone, Debug)]
@@ -147,46 +179,48 @@ where
         })
     }
 
-    /// Gets the event with the given index, if it exists.
+    /// Gets the event with a given index, if it exists.
     pub fn get_by_index(&self, index: usize) -> Option<EventRef<N>> {
         self.events
             .get(index)
             .map(|event| EventRef { event, index })
     }
 
-    /// Gets the event with the given hash, if it exists.
+    /// Gets the event with a given hash, if it exists.
     pub fn get_by_hash<'a>(&'a self, hash: &Hash) -> Option<EventRef<'a, N>> {
         self.get_index(hash)
             .and_then(|index| self.get_by_index(index))
     }
 
-    pub fn ancestors<'a>(&'a self, _event: EventRef<'a, N>) -> SubGraphIter<'a, N> {
-        let nodes = BTreeSet::new();
-        SubGraphIter {
+    /// Gets all the ancestors of an event in the graph.
+    pub fn ancestors<'a>(&'a self, event: EventRef<'a, N>) -> AncestorIter<'a, N> {
+        AncestorIter {
             graph: self,
-            // FIXME
-            nodes,
-            seen: BitSet::new(),
+            queue: iter::once(event).collect(),
         }
-    }
-
-    /// Polls the failure detector for any new failures and outputs messages for the networking
-    /// layer to send to remote nodes.
-    pub fn poll(&mut self) -> Result<Vec<Message<N>>, Error> {
-        // FIXME
-        Err(Error::FailureDetector)
-    }
-
-    /// Handles an incoming message from the networking layer.
-    pub fn handle_message(&mut self, _msg: &Message<N>) -> Result<(), Error> {
-        // FIXME
-        Ok(())
     }
 }
 
-/// The state of an iterator over a subset of nodes in a `Graph`.
-pub struct SubGraphIter<'a, N: NodeId + 'a> {
+/// The state of an iterator over the ancestors of an `Event` in a `Graph`.
+pub struct AncestorIter<'a, N: NodeId + 'a> {
+    /// The original graph.
     pub graph: &'a Graph<N>,
-    pub nodes: BTreeSet<EventRef<'a, N>>,
-    pub seen: BitSet,
+    /// The queue of nodes to be traversed through to their ancestors.
+    pub queue: VecDeque<EventRef<'a, N>>,
+}
+
+impl<'a, N: NodeId + 'a> Iterator for AncestorIter<'a, N> {
+    type Item = EventRef<'a, N>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let event = self.queue.pop_back()?;
+        let mut add_parent = |parent: Option<&Hash>| {
+            parent
+                .and_then(|hash| self.graph.get_by_hash(hash))
+                .map(|parent| self.queue.push_front(parent))
+        };
+        add_parent(event.other_parent());
+        add_parent(event.self_parent());
+        Some(event)
+    }
 }
