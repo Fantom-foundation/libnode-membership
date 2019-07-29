@@ -2,7 +2,7 @@
 name = "libnode-membership"
 version = "0.0.1"
 authors = [
-    "Samuel Marks <samuel@offscale.io>",
+    "Samuel Marks <@SamuelMarks>",
     "Vladimir Komendantskiy <komendantsky@gmail.com>",
 ]
 edition = "2018"
