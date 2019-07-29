@@ -2,7 +2,7 @@ libnode-membership
 ==================
 [![Build Status](https://travis-ci.org/Fantom-foundation/libnode-membership.svg?branch=master)](https://travis-ci.org/Fantom-foundation/libnode-membership)
 
-libnode-membership in Rust.
+This is a node membership library in Rust.
 
 ## RFCs
 
@@ -30,4 +30,6 @@ $ git clone https://github.com/Fantom-foundation/libnode-membership && cd libnod
 $ cargo test
 # Format, build and test
 $ cargo make
+# Compile the documentation in `target/doc`
+$ cargo doc
 ```
